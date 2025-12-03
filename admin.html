@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Admin Panel{% endblock %}
+{% block content %}
+
+<h2 class="title">Admin Panel - Alfashop</h2>
+
+<!-- Add Product Form -->
+<form method="POST" action="/add_product">
+    <h3>Add New Product</h3>
+    <input type="text" name="name" placeholder="Product Name" required>
+    <input type="number" name="price" placeholder="Price" step="0.01" required>
+    <input type="text" name="description" placeholder="Description" required>
+    <input type="submit" value="Add Product">
+</form>
+
+<!-- Product List -->
+<h3>Existing Products</h3>
+<div class="products">
+    {% for product in products %}
+    <div class="product-card">
+        <h3>{{ product[1] }}</h3>
+        <p class="price">${{ product[2] }}</p>
+        <p>{{ product[3] }}</p>
+    </div>
+    {% endfor %}
+</div>
+
+{% endblock %}

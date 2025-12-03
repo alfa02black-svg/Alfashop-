@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Login{% endblock %}
+{% block content %}
+<h2 class="title">Login to Alfashop</h2>
+<form method="POST" id="loginForm">
+    <input type="text" name="username" placeholder="Username" required>
+    <input type="password" name="password" placeholder="Password" required>
+    <input type="submit" value="Login">
+    <p>Don't have an account? <a href="/register">Register here</a></p>
+</form>
+
+<script>
+document.getElementById("loginForm").addEventListener("submit", function(e){
+    const user = this.username.value.trim();
+    const pass = this.password.value.trim();
+    if(user === "" || pass === ""){
+        e.preventDefault();
+        alert("Please fill all fields!");
+    }
+});
+</script>
+{% endblock %}
