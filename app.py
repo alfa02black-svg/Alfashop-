@@ -2,13 +2,12 @@ import json
 import os
 import uuid
 import secrets
-import hashlib # ADDED: Used for standard secure hashing
+import hashlib
 from datetime import datetime, timedelta
 from functools import wraps 
 
 # Import necessary Flask components
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify, abort
-# Removed: from werkzeug.security import generate_password_hash, check_password_hash
 
 # --- CUSTOM SECURITY FUNCTIONS (Replaces werkzeug.security) ---
 
@@ -50,6 +49,9 @@ def custom_check_password_hash(stored_hash, password):
 ADMIN_ROLE = 'admin'
 USER_ROLE = 'user'
 
+# New constraint: Maximum registrations allowed per IP address
+MAX_REGISTRATIONS_PER_IP = 2 
+
 # Mock Database Structure 
 # Stored as: { 'username': {'password_hash': 'salt$hash', 'role': 'admin/user', 'is_blocked': true/false} }
 USER_DB = {
@@ -65,6 +67,18 @@ USER_DB = {
         'is_blocked': False
     }
 }
+
+# New DB to track registrations by IP address.
+# { 'ip_address': count }
+IP_REGISTRATION_COUNT = {}
+
+# Initialize IP count for existing users (assuming they registered from a single mock IP)
+for username in USER_DB:
+    # A simplified way to initialize the count for existing users
+    # In a real app, the IP would be stored alongside user data.
+    mock_ip = "127.0.0.1" 
+    IP_REGISTRATION_COUNT[mock_ip] = IP_REGISTRATION_COUNT.get(mock_ip, 0) + 1
+
 
 app = Flask(__name__)
 
@@ -527,6 +541,21 @@ def register():
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
+        
+        # Determine the client's IP address
+        # In a real deployed environment, 'X-Forwarded-For' is often used
+        # In this environment, request.remote_addr is the most reliable way
+        client_ip = request.remote_addr 
+        
+        # --- IP Registration Limit Check ---
+        current_count = IP_REGISTRATION_COUNT.get(client_ip, 0)
+        
+        if current_count >= MAX_REGISTRATIONS_PER_IP:
+            error_msg = f'Registration limit exceeded for this IP address ({client_ip}). Max allowed: {MAX_REGISTRATIONS_PER_IP}'
+            print(f"RATE LIMIT: {error_msg}")
+            return render_template_string(AUTH_HTML, view='register', error=error_msg)
+        # --- End IP Check ---
+
 
         if not username or not password:
             return render_template_string(AUTH_HTML, view='register', error='Missing credentials.')
@@ -534,11 +563,18 @@ def register():
         if username in USER_DB:
             return render_template_string(AUTH_HTML, view='register', error='Username already exists.')
 
-        # Security: Hash the password before saving using the custom function
+        # If all checks pass, proceed with registration
+        
+        # 1. Security: Hash the password before saving using the custom function
         hashed_password = custom_generate_password_hash(password)
 
-        # Default registration is always USER_ROLE
+        # 2. Default registration is always USER_ROLE
         USER_DB[username] = {'password_hash': hashed_password, 'role': USER_ROLE, 'is_blocked': False}
+        
+        # 3. Update the IP registration count
+        IP_REGISTRATION_COUNT[client_ip] = current_count + 1
+        print(f"SUCCESSFUL REGISTRATION: User {username} from IP {client_ip}. Total registrations: {IP_REGISTRATION_COUNT[client_ip]}")
+
 
         session.permanent = True
         session['user'] = {'username': username, 'role': USER_ROLE}
