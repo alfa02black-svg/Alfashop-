@@ -2,11 +2,47 @@ import json
 import os
 import uuid
 import secrets
+import hashlib # ADDED: Used for standard secure hashing
 from datetime import datetime, timedelta
+from functools import wraps 
 
 # Import necessary Flask components
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify, abort
-from werkzeug.security import generate_password_hash, check_password_hash
+# Removed: from werkzeug.security import generate_password_hash, check_password_hash
+
+# --- CUSTOM SECURITY FUNCTIONS (Replaces werkzeug.security) ---
+
+def custom_generate_password_hash(password):
+    """
+    Generates a salted, hashed password using Python's standard libraries.
+    NOTE: For high-security production apps, libraries like bcrypt or Argon2 
+    are preferred for stronger key stretching.
+    """
+    # Generate a cryptographically secure salt (32 bytes = 64 hex chars)
+    salt = secrets.token_hex(32)
+    
+    # Hash the combination of password and salt using SHA-256
+    hashed_password = hashlib.sha256((password + salt).encode('utf-8')).hexdigest()
+    
+    # Store salt and hash separated by '$'
+    return f"{salt}${hashed_password}"
+
+def custom_check_password_hash(stored_hash, password):
+    """
+    Checks a plaintext password against a stored 'salt$hash' string.
+    """
+    if '$' not in stored_hash:
+        # Invalid format
+        return False
+        
+    salt, original_hash = stored_hash.split('$', 1)
+    
+    # Re-hash the provided password with the stored salt
+    check_hash = hashlib.sha256((password + salt).encode('utf-8')).hexdigest()
+    
+    # Use secrets.compare_digest for a timing-attack safe comparison
+    return secrets.compare_digest(check_hash, original_hash)
+
 
 # --- CONFIGURATION AND CONSTANTS ---
 
@@ -15,16 +51,16 @@ ADMIN_ROLE = 'admin'
 USER_ROLE = 'user'
 
 # Mock Database Structure 
-# Stored as: { 'username': {'password_hash': '...', 'role': 'admin/user', 'is_blocked': true/false} }
+# Stored as: { 'username': {'password_hash': 'salt$hash', 'role': 'admin/user', 'is_blocked': true/false} }
 USER_DB = {
     'admin': {
-        # Securely hash the default password
-        'password_hash': generate_password_hash('adminpassword'), 
+        # Using the new custom hashing function for default admin password
+        'password_hash': custom_generate_password_hash('adminpassword'), 
         'role': ADMIN_ROLE, 
         'is_blocked': False
     },
     'user1': {
-        'password_hash': generate_password_hash('userpassword'), 
+        'password_hash': custom_generate_password_hash('userpassword'), 
         'role': USER_ROLE, 
         'is_blocked': False
     }
@@ -33,8 +69,6 @@ USER_DB = {
 app = Flask(__name__)
 
 # --- APP CONFIGURATION ---
-# SECRET_KEY is mandatory for session security
-# The default uses os.urandom for local testing; replace with a long, complex string for production.
 app.secret_key = secrets.token_hex(32) 
 app.permanent_session_lifetime = timedelta(days=1)
 
@@ -51,7 +85,7 @@ AUTH_HTML = """
     <title>Secure Web App - Auth</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;900&display=swap');
         body { font-family: 'Inter', sans-serif; }
     </style>
 </head>
@@ -139,7 +173,7 @@ DASHBOARD_HTML = """
     <title>{{ role.capitalize() }} Dashboard | Python App</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;900&display=swap');
         body { font-family: 'Inter', sans-serif; }
     </style>
 </head>
@@ -431,7 +465,7 @@ DASHBOARD_HTML = """
 
 def requires_login(f):
     """Decorator to check if user is logged in."""
-    @app.route_context_processor
+    @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user' not in session:
             return redirect(url_for('index'))
@@ -440,10 +474,13 @@ def requires_login(f):
 
 def requires_admin(f):
     """Decorator to check if user is logged in AND is an admin."""
-    @app.route_context_processor
-    @requires_login
+    @wraps(f)
     def decorated_function(*args, **kwargs):
-        # The user is guaranteed to be in the session due to requires_login
+        # 1. Check if logged in
+        if 'user' not in session:
+            return redirect(url_for('index'))
+            
+        # 2. Check role
         if session.get('user', {}).get('role') != ADMIN_ROLE:
             abort(403) # Forbidden
         return f(*args, **kwargs)
@@ -473,8 +510,8 @@ def login():
         if user_data['is_blocked']:
             return render_template_string(AUTH_HTML, view='login', error='Account is blocked. Contact administrator.')
 
-        # 2. Check the secure password hash
-        if check_password_hash(user_data['password_hash'], password):
+        # 2. Check the secure password hash using the custom function
+        if custom_check_password_hash(user_data['password_hash'], password):
             session.permanent = True
             session['user'] = {'username': username, 'role': user_data['role']}
             return redirect(url_for('dashboard'))
@@ -497,8 +534,8 @@ def register():
         if username in USER_DB:
             return render_template_string(AUTH_HTML, view='register', error='Username already exists.')
 
-        # Security: Hash the password before saving
-        hashed_password = generate_password_hash(password)
+        # Security: Hash the password before saving using the custom function
+        hashed_password = custom_generate_password_hash(password)
 
         # Default registration is always USER_ROLE
         USER_DB[username] = {'password_hash': hashed_password, 'role': USER_ROLE, 'is_blocked': False}
@@ -578,8 +615,8 @@ def api_add_admin():
     if username in USER_DB:
         return jsonify({'error': 'Username already exists.'}), 409
 
-    # Security: Hash the password
-    hashed_password = generate_password_hash(password)
+    # Security: Hash the password using the custom function
+    hashed_password = custom_generate_password_hash(password)
 
     # Register as admin
     USER_DB[username] = {'password_hash': hashed_password, 'role': ADMIN_ROLE, 'is_blocked': False}
