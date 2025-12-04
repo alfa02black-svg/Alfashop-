@@ -1,24 +1,24 @@
-import uuid
 import json
-from typing import Dict, Any, Optional
+import os
+import uuid
+import secrets
+from datetime import datetime, timedelta
 
-from flask import (
-    Flask, request, redirect, url_for, session, 
-    render_template_string, jsonify, Response
-)
-# Using werkzeug.security is MANDATORY for professional authentication
+# Import necessary Flask components
+from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # --- CONFIGURATION AND CONSTANTS ---
 
 # Define Roles
-ADMIN_ROLE: str = 'admin'
-USER_ROLE: str = 'user'
+ADMIN_ROLE = 'admin'
+USER_ROLE = 'user'
 
-# Mock Database Structure (In a production environment, this would be a persistent database like PostgreSQL or Firestore)
-# { 'username': {'password_hash': '...', 'role': 'admin/user', 'is_blocked': True/False} }
-USER_DB: Dict[str, Dict[str, Any]] = {
+# Mock Database Structure 
+# Stored as: { 'username': {'password_hash': '...', 'role': 'admin/user', 'is_blocked': true/false} }
+USER_DB = {
     'admin': {
+        # Securely hash the default password
         'password_hash': generate_password_hash('adminpassword'), 
         'role': ADMIN_ROLE, 
         'is_blocked': False
@@ -30,35 +30,19 @@ USER_DB: Dict[str, Dict[str, Any]] = {
     }
 }
 
-# Initialize Flask App
 app = Flask(__name__)
-# IMPORTANT: Use a complex, long secret key, ideally loaded from an environment variable
-app.config['SECRET_KEY'] = str(uuid.uuid4()) # Dynamic secret for demonstration, use a fixed secure one in production
 
-# --- HELPER FUNCTIONS ---
+# --- APP CONFIGURATION ---
+# SECRET_KEY is mandatory for session security
+# The default uses os.urandom for local testing; replace with a long, complex string for production.
+app.secret_key = secrets.token_hex(32) 
+app.permanent_session_lifetime = timedelta(days=1)
 
-def get_current_user_role() -> Optional[str]:
-    """Retrieves the role of the currently logged-in user from the session."""
-    return session.get('role')
 
-def is_admin(role: Optional[str] = None) -> bool:
-    """Checks if the provided role (or current session role) is an admin."""
-    role = role if role is not None else get_current_user_role()
-    return role == ADMIN_ROLE
+# --- TEMPLATE STRINGS (HTML + Tailwind CSS) ---
 
-def requires_admin(func):
-    """Decorator to enforce admin-only access for a route."""
-    from functools import wraps
-    @wraps(func)
-    def decorated_function(*args, **kwargs):
-        if not is_admin():
-            return jsonify({'error': 'Authorization Required: Must be an Admin.'}), 403
-        return func(*args, **kwargs)
-    return decorated_function
-
-# --- HTML TEMPLATE STRINGS ---
-
-INDEX_HTML = """
+# HTML Template for Login and Registration Pages
+AUTH_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -134,7 +118,7 @@ INDEX_HTML = """
 
         <p class="mt-6 text-center text-sm text-gray-600">
             Already registered? 
-            <a href="{{ url_for('home') }}" class="font-medium text-green-600 hover:text-green-500">
+            <a href="{{ url_for('index') }}" class="font-medium text-green-600 hover:text-green-500">
                 Sign in
             </a>
         </p>
@@ -145,13 +129,14 @@ INDEX_HTML = """
 </html>
 """
 
+# HTML Template for the Dashboard (User/Admin View)
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ role.capitalize() }} Dashboard | Flask App</title>
+    <title>{{ role.capitalize() }} Dashboard | Python App</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
@@ -242,7 +227,6 @@ DASHBOARD_HTML = """
                             </tr>
                         </thead>
                         <tbody id="user-table-body" class="bg-white divide-y divide-gray-200">
-                            <!-- Users are populated here by Jinja and managed by JS -->
                             {% for user_key, user_data in users.items() %}
                             <tr id="user-row-{{ user_key }}">
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{ user_key }}</td>
@@ -260,7 +244,7 @@ DASHBOARD_HTML = """
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
                                     {% if user_key != username %}
-                                        <button onclick="toggleBlockStatus('{{ user_key }}', '{{ user_data.is_blocked }}')" 
+                                        <button onclick="toggleBlockStatus('{{ user_key }}', '{{ 'true' if user_data.is_blocked else 'false' }}')" 
                                                 id="block-btn-{{ user_key }}"
                                                 class="text-white font-medium py-1 px-3 rounded-lg text-xs transition duration-150 shadow-md 
                                                 {% if user_data.is_blocked %}bg-green-500 hover:bg-green-600{% else %}bg-gray-500 hover:bg-gray-600{% endif %}">
@@ -285,14 +269,14 @@ DASHBOARD_HTML = """
                 </h3>
                 
                 <div id="product-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                    <!-- Product Cards rendered via Flask loop -->
+                    <!-- Product Cards rendered via Jinja loop -->
                     {% for product in products %}
                     <div class="product-card bg-gray-50 p-5 rounded-lg shadow-md hover:shadow-xl transition duration-300 border border-gray-200"
-                         data-name="{{ product.name | lower }}">
+                         data-name="{{ product.name.lower() }}">
                         <h4 class="text-xl font-bold text-indigo-700 mb-2">{{ product.name }}</h4>
                         <p class="text-gray-600 mb-3">{{ product.description }}</p>
                         <div class="flex justify-between items-center">
-                            <span class="text-2xl font-extrabold text-green-600">${{ "{:,.2f}".format(product.price) }}</span>
+                            <span class="text-2xl font-extrabold text-green-600">${{ "{:.2f}".format(product.price) }}</span>
                             <!-- ADDED: onclick handler for interactivity feedback -->
                             <button onclick="addToCart('{{ product.name }}')" class="bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm hover:bg-indigo-600 transition">
                                 Add to Cart
@@ -366,7 +350,7 @@ DASHBOARD_HTML = """
             }
         }
         
-        // --- ADMIN DYNAMIC FUNCTIONS ---
+        // --- ADMIN DYNAMIC FUNCTIONS (Client-side API calls) ---
 
         // Handle Add Admin Form Submission
         document.getElementById('add-admin-form').addEventListener('submit', async (e) => {
@@ -375,12 +359,13 @@ DASHBOARD_HTML = """
             const username = form.username.value;
             const password = form.password.value;
 
+            // Simple check to prevent self-creation conflict with the DB key
             if (username === '{{ username }}') {
                 showMessage("Error", "Cannot create an admin with your own username.");
                 return;
             }
 
-            const response = await fetch('{{ url_for("add_admin_api") }}', {
+            const response = await fetch('{{ url_for('api_add_admin') }}', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password })
@@ -388,8 +373,7 @@ DASHBOARD_HTML = """
             const result = await response.json();
 
             if (response.ok) {
-                // IMPORTANT: In a real application, you would dynamically add the new row here. 
-                // For this single-file example, a refresh is the simplest way to see the new admin in the table.
+                // Since this uses Jinja templates rendered once, a refresh is needed to see the new user in the table
                 showMessage("Success", result.message + ". Please refresh the page to see the new administrator.");
                 form.reset();
             } else {
@@ -398,10 +382,11 @@ DASHBOARD_HTML = """
         });
 
         // Handle Block/Unblock Button Click
-        async function toggleBlockStatus(username, isBlocked) {
-            const newStatus = isBlocked === 'True' ? false : true;
+        async function toggleBlockStatus(username, isBlockedString) {
+            const isBlocked = isBlockedString === 'true'; // Convert string to boolean
+            const newStatus = !isBlocked;
             
-            const response = await fetch('{{ url_for("block_user_api") }}', {
+            const response = await fetch('{{ url_for('api_block_user') }}', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, is_blocked: newStatus })
@@ -410,9 +395,10 @@ DASHBOARD_HTML = """
 
             if (response.ok) {
                 // Client-side UI Update (Without Page Reload)
-                const statusSpan = document.getElementById(`status-{{ "" }}` + username);
-                const button = document.getElementById(`block-btn-{{ "" }}` + username);
+                const statusSpan = document.getElementById(`status-${username}`);
+                const button = document.getElementById(`block-btn-${username}`);
                 
+                // Update button and status display
                 if (newStatus) {
                     statusSpan.textContent = 'Blocked';
                     statusSpan.classList.remove('bg-green-100', 'text-green-800');
@@ -420,7 +406,7 @@ DASHBOARD_HTML = """
                     button.textContent = 'Unblock';
                     button.classList.remove('bg-gray-500', 'hover:bg-gray-600');
                     button.classList.add('bg-green-500', 'hover:bg-green-600');
-                    button.setAttribute('onclick', `toggleBlockStatus('${username}', 'True')`);
+                    button.setAttribute('onclick', `toggleBlockStatus('${username}', 'true')`);
                 } else {
                     statusSpan.textContent = 'Active';
                     statusSpan.classList.remove('bg-gray-200', 'text-gray-800');
@@ -428,7 +414,7 @@ DASHBOARD_HTML = """
                     button.textContent = 'Block';
                     button.classList.remove('bg-green-500', 'hover:bg-green-600');
                     button.classList.add('bg-gray-500', 'hover:bg-gray-600');
-                    button.setAttribute('onclick', `toggleBlockStatus('${username}', 'False')`);
+                    button.setAttribute('onclick', `toggleBlockStatus('${username}', 'false')`);
                 }
 
                 showMessage("Success", result.message);
@@ -441,141 +427,150 @@ DASHBOARD_HTML = """
 </html>
 """
 
-# --- FLASK ROUTES ---
+# --- HELPER FUNCTIONS AND DECORATORS ---
 
-@app.route('/')
-def home() -> Response:
-    """Renders the login page or redirects if authenticated."""
-    if 'username' in session:
+def requires_login(f):
+    """Decorator to check if user is logged in."""
+    @app.route_context_processor
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def requires_admin(f):
+    """Decorator to check if user is logged in AND is an admin."""
+    @app.route_context_processor
+    @requires_login
+    def decorated_function(*args, **kwargs):
+        # The user is guaranteed to be in the session due to requires_login
+        if session.get('user', {}).get('role') != ADMIN_ROLE:
+            abort(403) # Forbidden
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+# --- ROUTES ---
+
+@app.route('/', methods=['GET'])
+def index():
+    if 'user' in session:
         return redirect(url_for('dashboard'))
-    return render_template_string(INDEX_HTML, view='login')
+    return render_template_string(AUTH_HTML, view='login', error=None)
 
 @app.route('/login', methods=['POST'])
-def login() -> Response:
-    """Handles user login authentication with password hashing and block check."""
-    username: Optional[str] = request.form.get('username')
-    password: Optional[str] = request.form.get('password')
+def login():
+    username = request.form.get('username')
+    password = request.form.get('password')
 
     if not username or not password:
-        return render_template_string(INDEX_HTML, view='login', error='Missing credentials.')
-    
-    user_data: Optional[Dict[str, Any]] = USER_DB.get(username)
+        return render_template_string(AUTH_HTML, view='login', error='Missing credentials.')
+
+    user_data = USER_DB.get(username)
 
     if user_data:
         # 1. Check if the user is blocked
         if user_data['is_blocked']:
-            return render_template_string(INDEX_HTML, view='login', error='Account is blocked. Contact administrator.')
-        
+            return render_template_string(AUTH_HTML, view='login', error='Account is blocked. Contact administrator.')
+
         # 2. Check the secure password hash
         if check_password_hash(user_data['password_hash'], password):
-            session['username'] = username
-            session['role'] = user_data['role']
+            session.permanent = True
+            session['user'] = {'username': username, 'role': user_data['role']}
             return redirect(url_for('dashboard'))
 
     # If user doesn't exist or password check fails
-    return render_template_string(INDEX_HTML, view='login', error='Invalid username or password.')
+    return render_template_string(AUTH_HTML, view='login', error='Invalid username or password.')
 
 @app.route('/register', methods=['GET', 'POST'])
-def register() -> Response:
-    """Handles new user registration, hashing the password, and setting the default USER_ROLE."""
-    if request.method == 'POST':
-        username: Optional[str] = request.form.get('username')
-        password: Optional[str] = request.form.get('password')
-
-        if not username or not password:
-            return render_template_string(INDEX_HTML, view='register', error='Missing credentials.')
-
-        if username in USER_DB:
-            return render_template_string(INDEX_HTML, view='register', error='Username already exists.')
-        
-        # Security: Hash the password before saving
-        hashed_password: str = generate_password_hash(password)
-        
-        # Default registration is always USER_ROLE
-        USER_DB[username] = {'password_hash': hashed_password, 'role': USER_ROLE, 'is_blocked': False}
-        
-        session['username'] = username
-        session['role'] = USER_ROLE
+def register():
+    if 'user' in session:
         return redirect(url_for('dashboard'))
 
-    return render_template_string(INDEX_HTML, view='register')
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
 
+        if not username or not password:
+            return render_template_string(AUTH_HTML, view='register', error='Missing credentials.')
+
+        if username in USER_DB:
+            return render_template_string(AUTH_HTML, view='register', error='Username already exists.')
+
+        # Security: Hash the password before saving
+        hashed_password = generate_password_hash(password)
+
+        # Default registration is always USER_ROLE
+        USER_DB[username] = {'password_hash': hashed_password, 'role': USER_ROLE, 'is_blocked': False}
+
+        session.permanent = True
+        session['user'] = {'username': username, 'role': USER_ROLE}
+        return redirect(url_for('dashboard'))
+    
+    return render_template_string(AUTH_HTML, view='register', error=None)
 
 @app.route('/dashboard')
-def dashboard() -> Response:
-    """Renders the dashboard, providing admin view privileges if applicable."""
-    if 'username' not in session:
-        return redirect(url_for('home'))
+@requires_login
+def dashboard():
+    user = session['user']
+    username = user['username']
+    role = user['role']
 
-    username: str = session['username']
-    role: str = session['role']
-    
     # Mock data for demonstration
     products = [
         {'id': 1, 'name': 'Quantum Flux Capacitor', 'price': 999.99, 'description': 'Enables temporal displacement.'},
         {'id': 2, 'name': 'Invisibility Cloak', 'price': 150.00, 'description': 'Perfect for silent observation.'},
         {'id': 3, 'name': 'Self-Stirring Mug', 'price': 29.50, 'description': 'The lazy person\'s dream.'}
     ]
-    
-    # If the user is an admin, they get the full list of users for management
-    dashboard_users: Dict[str, Dict[str, Any]] = USER_DB if is_admin(role) else {}
 
-    return render_template_string(DASHBOARD_HTML, 
-                           username=username, 
-                           role=role, 
-                           products=products,
-                           users=dashboard_users)
+    # If the user is an admin, they get the full list of users for management
+    dashboard_users = USER_DB if role == ADMIN_ROLE else {}
+
+    return render_template_string(
+        DASHBOARD_HTML, 
+        username=username, 
+        role=role, 
+        products=products,
+        users=dashboard_users
+    )
 
 @app.route('/logout')
-def logout() -> Response:
-    """Clears the session and redirects to the home page."""
-    session.pop('username', None)
-    session.pop('role', None)
-    return redirect(url_for('home'))
+@requires_login
+def logout():
+    session.pop('user', None)
+    return redirect(url_for('index'))
 
-# --- ADMIN API ENDPOINTS (Secured with @requires_admin decorator) ---
+
+# --- ADMIN API ENDPOINTS (Secured) ---
 
 @app.route('/api/block_user', methods=['POST'])
 @requires_admin
-def block_user_api() -> Response:
-    """API endpoint for Admin to block or unblock a user."""
-    try:
-        data: Optional[Dict[str, Any]] = request.get_json()
-        if not data:
-             return jsonify({'error': 'Invalid JSON payload.'}), 400
-             
-        username_to_modify: str = data.get('username')
-        is_blocked: bool = data.get('is_blocked')
+def api_block_user():
+    data = request.get_json()
+    username = data.get('username')
+    is_blocked = data.get('is_blocked')
 
-        if not isinstance(is_blocked, bool):
-             return jsonify({'error': 'Field is_blocked must be a boolean.'}), 400
+    if not isinstance(is_blocked, bool):
+        return jsonify({'error': 'Field is_blocked must be a boolean.'}), 400
 
-    except Exception:
-        return jsonify({'error': 'Failed to parse request data.'}), 400
-        
-    if username_to_modify not in USER_DB:
+    if username not in USER_DB:
         return jsonify({'error': 'User not found.'}), 404
-        
-    if username_to_modify == session.get('username'):
+
+    # Prevent admin from blocking their own account
+    if username == session['user']['username']:
         return jsonify({'error': 'Cannot block your own account.'}), 400
-        
-    USER_DB[username_to_modify]['is_blocked'] = is_blocked
-    action: str = "blocked" if is_blocked else "unblocked"
-    return jsonify({'message': f'User {username_to_modify} has been successfully {action}.'}), 200
+
+    USER_DB[username]['is_blocked'] = is_blocked
+    action = "blocked" if is_blocked else "unblocked"
+    
+    return jsonify({'message': f'User {username} has been successfully {action}.'})
 
 @app.route('/api/add_admin', methods=['POST'])
 @requires_admin
-def add_admin_api() -> Response:
-    """API endpoint for Admin to create a new admin account."""
-    try:
-        data: Optional[Dict[str, Any]] = request.get_json()
-        if not data:
-             return jsonify({'error': 'Invalid JSON payload.'}), 400
-             
-        username: str = data.get('username')
-        password: str = data.get('password')
-    except Exception:
-        return jsonify({'error': 'Failed to parse request data.'}), 400
+def api_add_admin():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
 
     if not username or not password:
         return jsonify({'error': 'Missing username or password.'}), 400
@@ -584,12 +579,15 @@ def add_admin_api() -> Response:
         return jsonify({'error': 'Username already exists.'}), 409
 
     # Security: Hash the password
-    hashed_password: str = generate_password_hash(password)
-    
+    hashed_password = generate_password_hash(password)
+
     # Register as admin
     USER_DB[username] = {'password_hash': hashed_password, 'role': ADMIN_ROLE, 'is_blocked': False}
-    return jsonify({'message': f'Admin user {username} created successfully.'}), 200
+    return jsonify({'message': f'Admin user {username} created successfully.'})
 
+
+# --- ENTRY POINT ---
 if __name__ == '__main__':
-    # Setting debug=True is for development only
-    app.run(debug=True)
+    # Running directly uses Flask's development server.
+    # For production (like Render), gunicorn is used (via requirements.txt).
+    app.run(debug=True, port=int(os.environ.get('PORT', 5000)))
