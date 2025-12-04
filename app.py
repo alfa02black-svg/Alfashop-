@@ -1,20 +1,60 @@
 import uuid
-from flask import Flask, request, redirect, url_for, session, render_template_string
+import json
+from typing import Dict, Any, Optional
+
+from flask import (
+    Flask, request, redirect, url_for, session, 
+    render_template_string, jsonify, Response
+)
+# Using werkzeug.security is MANDATORY for professional authentication
+from werkzeug.security import generate_password_hash, check_password_hash
+
+# --- CONFIGURATION AND CONSTANTS ---
+
+# Define Roles
+ADMIN_ROLE: str = 'admin'
+USER_ROLE: str = 'user'
+
+# Mock Database Structure (In a production environment, this would be a persistent database like PostgreSQL or Firestore)
+# { 'username': {'password_hash': '...', 'role': 'admin/user', 'is_blocked': True/False} }
+USER_DB: Dict[str, Dict[str, Any]] = {
+    'admin': {
+        'password_hash': generate_password_hash('adminpassword'), 
+        'role': ADMIN_ROLE, 
+        'is_blocked': False
+    },
+    'user1': {
+        'password_hash': generate_password_hash('userpassword'), 
+        'role': USER_ROLE, 
+        'is_blocked': False
+    }
+}
 
 # Initialize Flask App
 app = Flask(__name__)
-# Use a secure secret key for session management
-app.config['SECRET_KEY'] = 'a_very_secure_secret_key_that_should_be_stored_in_env_vars'
+# IMPORTANT: Use a complex, long secret key, ideally loaded from an environment variable
+app.config['SECRET_KEY'] = str(uuid.uuid4()) # Dynamic secret for demonstration, use a fixed secure one in production
 
-# --- Mock Database ---
-# IMPORTANT: In a real application, replace this dictionary with a proper database
-# to ensure data persists after the server restarts (which happens frequently on Render).
-USERS = {
-    # 'username': {'password': 'hashed_password', 'role': 'user/admin'}
-    'admin': {'password': 'adminpassword', 'role': 'admin'}, # For demonstration
-    'user1': {'password': 'userpassword', 'role': 'user'}
-}
-# --- End Mock Database ---
+# --- HELPER FUNCTIONS ---
+
+def get_current_user_role() -> Optional[str]:
+    """Retrieves the role of the currently logged-in user from the session."""
+    return session.get('role')
+
+def is_admin(role: Optional[str] = None) -> bool:
+    """Checks if the provided role (or current session role) is an admin."""
+    role = role if role is not None else get_current_user_role()
+    return role == ADMIN_ROLE
+
+def requires_admin(func):
+    """Decorator to enforce admin-only access for a route."""
+    from functools import wraps
+    @wraps(func)
+    def decorated_function(*args, **kwargs):
+        if not is_admin():
+            return jsonify({'error': 'Authorization Required: Must be an Admin.'}), 403
+        return func(*args, **kwargs)
+    return decorated_function
 
 # --- HTML TEMPLATE STRINGS ---
 
@@ -24,11 +64,9 @@ INDEX_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Advanced Web App - Auth</title>
-    <!-- Load Tailwind CSS via CDN -->
+    <title>Secure Web App - Auth</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* Custom font import for a modern feel */
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
     </style>
@@ -38,20 +76,18 @@ INDEX_HTML = """
     <div id="auth-card" class="w-full max-w-md bg-white p-8 md:p-10 rounded-xl shadow-2xl transition-all duration-300">
         <h1 class="text-3xl font-bold text-center mb-6 text-gray-800">
             {% if view == 'login' %}
-                Welcome Back
+                Professional Login
             {% else %}
-                Join the Platform
+                Secure Registration
             {% endif %}
         </h1>
 
-        <!-- Error/Success Message Display -->
         {% if error %}
         <div class="p-3 mb-4 text-sm text-red-700 bg-red-100 rounded-lg text-center" role="alert">
             {{ error }}
         </div>
         {% endif %}
 
-        <!-- Login Form -->
         {% if view == 'login' %}
         <form method="POST" action="{{ url_for('login') }}" class="space-y-6">
             <div>
@@ -71,14 +107,13 @@ INDEX_HTML = """
         </form>
 
         <p class="mt-6 text-center text-sm text-gray-600">
-            Don't have an account? 
+            Need an account? 
             <a href="{{ url_for('register') }}" class="font-medium text-indigo-600 hover:text-indigo-500">
                 Register now
             </a>
         </p>
         {% endif %}
         
-        <!-- Registration Form -->
         {% if view == 'register' %}
         <form method="POST" action="{{ url_for('register') }}" class="space-y-6">
             <div>
@@ -117,10 +152,8 @@ DASHBOARD_HTML = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ role.capitalize() }} Dashboard | Flask App</title>
-    <!-- Load Tailwind CSS via CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* Custom font for a clean look */
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
     </style>
@@ -133,13 +166,13 @@ DASHBOARD_HTML = """
             <div class="flex justify-between items-center h-16">
                 <!-- Logo/Title -->
                 <div class="flex-shrink-0">
-                    <span class="text-2xl font-extrabold text-indigo-600">
-                        Advanced App ({{ role.capitalize() }})
+                    <span class="text-2xl font-extrabold {% if role == 'admin' %}text-red-600{% else %}text-indigo-600{% endif %}">
+                        {{ role.capitalize() }} Panel
                     </span>
                 </div>
                 
-                <!-- Search Bar (User & Store Panel Feature) -->
-                <div class="flex-1 max-w-lg mx-8 hidden md:block">
+                <!-- Search Bar -->
+                <div class="flex-1 max-w-lg mx-2 sm:mx-8 block">
                     <div class="relative">
                         <input type="text" id="search-input" placeholder="Search products or features..."
                                class="w-full py-2 pl-10 pr-4 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -152,7 +185,7 @@ DASHBOARD_HTML = """
 
                 <!-- User Info & Logout -->
                 <div class="flex items-center space-x-4">
-                    <span class="text-gray-700 font-medium">Hello, {{ username }}!</span>
+                    <span class="text-gray-700 font-medium hidden sm:block">Hello, {{ username }}!</span>
                     <a href="{{ url_for('logout') }}" 
                        class="px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-red-500 hover:bg-red-600 transition duration-150 shadow-md">
                         Logout
@@ -169,32 +202,86 @@ DASHBOARD_HTML = """
             <header class="mb-8">
                 <h2 class="text-4xl font-extrabold text-gray-900">
                     {% if role == 'admin' %}
-                        Admin Control Panel
+                        <span class="text-red-600">Admin Control Panel</span>
                     {% else %}
                         Your User Dashboard
                     {% endif %}
                 </h2>
                 <p class="mt-2 text-xl text-gray-600">
-                    Manage your account and explore the store.
+                    Manage your account and explore the offerings.
                 </p>
             </header>
 
-            <!-- Admin-Specific Content -->
+            <!-- Admin-Specific Management Panel -->
             {% if role == 'admin' %}
-            <div class="bg-red-50 p-6 rounded-xl shadow-lg border-l-4 border-red-500 mb-8">
-                <h3 class="text-2xl font-semibold text-red-800 mb-4">Critical Admin Actions</h3>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <button class="bg-red-600 text-white p-3 rounded-lg hover:bg-red-700 transition transform hover:scale-[1.02]">Manage Users</button>
-                    <button class="bg-red-600 text-white p-3 rounded-lg hover:bg-red-700 transition transform hover:scale-[1.02]">View Reports</button>
-                    <button class="bg-red-600 text-white p-3 rounded-lg hover:bg-red-700 transition transform hover:scale-[1.02]">System Health Check</button>
+            <div class="bg-white p-6 rounded-xl shadow-xl border-t-4 border-red-500 mb-8">
+                <h3 class="text-2xl font-semibold text-red-800 mb-6">User and Role Management</h3>
+                
+                <!-- Add Admin Form -->
+                <div class="mb-8 p-4 bg-red-50 border border-red-200 rounded-lg">
+                    <h4 class="text-xl font-bold mb-3 text-red-700">Add New Administrator</h4>
+                    <form id="add-admin-form" class="flex flex-col md:flex-row gap-3">
+                        <input type="text" name="username" placeholder="New Admin Username" required class="flex-1 px-4 py-2 border rounded-lg focus:ring-red-500">
+                        <input type="password" name="password" placeholder="New Admin Password" required class="flex-1 px-4 py-2 border rounded-lg focus:ring-red-500">
+                        <button type="submit" class="w-full md:w-auto px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
+                            Create Admin
+                        </button>
+                    </form>
+                </div>
+                
+                <!-- User List Table -->
+                <h4 class="text-xl font-bold mb-3 text-gray-700">All Registered Users</h4>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="user-table-body" class="bg-white divide-y divide-gray-200">
+                            <!-- Users are populated here by Jinja and managed by JS -->
+                            {% for user_key, user_data in users.items() %}
+                            <tr id="user-row-{{ user_key }}">
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{ user_key }}</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    <span id="role-{{ user_key }}" class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
+                                        {% if user_data.role == 'admin' %}bg-red-100 text-red-800{% else %}bg-indigo-100 text-indigo-800{% endif %}">
+                                        {{ user_data.role.capitalize() }}
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                    <span id="status-{{ user_key }}" class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
+                                        {% if user_data.is_blocked %}bg-gray-200 text-gray-800{% else %}bg-green-100 text-green-800{% endif %}">
+                                        {{ 'Blocked' if user_data.is_blocked else 'Active' }}
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    {% if user_key != username %}
+                                        <button onclick="toggleBlockStatus('{{ user_key }}', '{{ user_data.is_blocked }}')" 
+                                                id="block-btn-{{ user_key }}"
+                                                class="text-white font-medium py-1 px-3 rounded-lg text-xs transition duration-150 shadow-md 
+                                                {% if user_data.is_blocked %}bg-green-500 hover:bg-green-600{% else %}bg-gray-500 hover:bg-gray-600{% endif %}">
+                                            {{ 'Unblock' if user_data.is_blocked else 'Block' }}
+                                        </button>
+                                    {% else %}
+                                        <span class="text-gray-400">Self</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
                 </div>
             </div>
             {% endif %}
 
-            <!-- User Panel & Store View -->
+            <!-- Store View (Visible to both User and Admin) -->
             <div class="bg-white shadow-xl rounded-xl p-6">
                 <h3 class="text-2xl font-semibold text-gray-900 mb-6 border-b pb-2">
-                    Store & Products
+                    Store & Products (Clickable Placeholders)
                 </h3>
                 
                 <div id="product-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -206,7 +293,8 @@ DASHBOARD_HTML = """
                         <p class="text-gray-600 mb-3">{{ product.description }}</p>
                         <div class="flex justify-between items-center">
                             <span class="text-2xl font-extrabold text-green-600">${{ "{:,.2f}".format(product.price) }}</span>
-                            <button class="bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm hover:bg-indigo-600 transition">
+                            <!-- ADDED: onclick handler for interactivity feedback -->
+                            <button onclick="addToCart('{{ product.name }}')" class="bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm hover:bg-indigo-600 transition">
                                 Add to Cart
                             </button>
                         </div>
@@ -222,12 +310,37 @@ DASHBOARD_HTML = """
 
         </div>
     </main>
+    
+    <!-- Custom Modal/Message Box -->
+    <div id="message-modal" class="fixed inset-0 bg-gray-600 bg-opacity-75 hidden items-center justify-center p-4 z-50">
+        <div class="bg-white p-6 rounded-lg shadow-2xl max-w-sm w-full">
+            <h3 class="text-xl font-bold text-gray-800 mb-4" id="modal-title">Action Feedback</h3>
+            <p class="text-gray-600 mb-6" id="modal-content">Action logged in console.</p>
+            <button onclick="document.getElementById('message-modal').classList.add('hidden'); document.getElementById('message-modal').classList.remove('flex');"
+                    class="w-full py-2 px-4 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700">
+                Close
+            </button>
+        </div>
+    </div>
 
-    <!-- JavaScript for Search Functionality -->
+
+    <!-- JavaScript for Dynamic Interactivity and Admin Actions -->
     <script>
-        /**
-         * Filters the product cards based on the text entered in the search bar.
-         */
+        /** Shows a custom modal instead of using the forbidden alert() function. */
+        function showMessage(title, message) {
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-content').textContent = message;
+            document.getElementById('message-modal').classList.remove('hidden');
+            document.getElementById('message-modal').classList.add('flex');
+        }
+        
+        /** Mock function for 'Add to Cart' interactivity. */
+        function addToCart(productName) {
+            console.log("LOG: Attempted to add '" + productName + "' to cart.");
+            showMessage("Product Added!", "'" + productName + "' functionality is mocked. Check console for log.");
+        }
+
+        /** Filters the product cards based on the text entered in the search bar. */
         function filterProducts() {
             const input = document.getElementById('search-input');
             const filter = input.value.toLowerCase();
@@ -246,11 +359,81 @@ DASHBOARD_HTML = """
                 }
             }
 
-            // Show 'No Results' message if no products match the filter
             if (!found && filter !== '') {
                 noResults.classList.remove('hidden');
             } else {
                 noResults.classList.add('hidden');
+            }
+        }
+        
+        // --- ADMIN DYNAMIC FUNCTIONS ---
+
+        // Handle Add Admin Form Submission
+        document.getElementById('add-admin-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const username = form.username.value;
+            const password = form.password.value;
+
+            if (username === '{{ username }}') {
+                showMessage("Error", "Cannot create an admin with your own username.");
+                return;
+            }
+
+            const response = await fetch('{{ url_for("add_admin_api") }}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const result = await response.json();
+
+            if (response.ok) {
+                // IMPORTANT: In a real application, you would dynamically add the new row here. 
+                // For this single-file example, a refresh is the simplest way to see the new admin in the table.
+                showMessage("Success", result.message + ". Please refresh the page to see the new administrator.");
+                form.reset();
+            } else {
+                showMessage("Error", result.error || "Failed to add admin.");
+            }
+        });
+
+        // Handle Block/Unblock Button Click
+        async function toggleBlockStatus(username, isBlocked) {
+            const newStatus = isBlocked === 'True' ? false : true;
+            
+            const response = await fetch('{{ url_for("block_user_api") }}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, is_blocked: newStatus })
+            });
+            const result = await response.json();
+
+            if (response.ok) {
+                // Client-side UI Update (Without Page Reload)
+                const statusSpan = document.getElementById(`status-{{ "" }}` + username);
+                const button = document.getElementById(`block-btn-{{ "" }}` + username);
+                
+                if (newStatus) {
+                    statusSpan.textContent = 'Blocked';
+                    statusSpan.classList.remove('bg-green-100', 'text-green-800');
+                    statusSpan.classList.add('bg-gray-200', 'text-gray-800');
+                    button.textContent = 'Unblock';
+                    button.classList.remove('bg-gray-500', 'hover:bg-gray-600');
+                    button.classList.add('bg-green-500', 'hover:bg-green-600');
+                    button.setAttribute('onclick', `toggleBlockStatus('${username}', 'True')`);
+                } else {
+                    statusSpan.textContent = 'Active';
+                    statusSpan.classList.remove('bg-gray-200', 'text-gray-800');
+                    statusSpan.classList.add('bg-green-100', 'text-green-800');
+                    button.textContent = 'Block';
+                    button.classList.remove('bg-green-500', 'hover:bg-green-600');
+                    button.classList.add('bg-gray-500', 'hover:bg-gray-600');
+                    button.setAttribute('onclick', `toggleBlockStatus('${username}', 'False')`);
+                }
+
+                showMessage("Success", result.message);
+            } else {
+                showMessage("Error", result.error || "Action failed.");
             }
         }
     </script>
@@ -261,76 +444,152 @@ DASHBOARD_HTML = """
 # --- FLASK ROUTES ---
 
 @app.route('/')
-def home():
-    """Renders the main landing page, or redirects to dashboard if logged in."""
+def home() -> Response:
+    """Renders the login page or redirects if authenticated."""
     if 'username' in session:
         return redirect(url_for('dashboard'))
     return render_template_string(INDEX_HTML, view='login')
 
 @app.route('/login', methods=['POST'])
-def login():
-    """Handles user login authentication."""
-    username = request.form.get('username')
-    password = request.form.get('password')
+def login() -> Response:
+    """Handles user login authentication with password hashing and block check."""
+    username: Optional[str] = request.form.get('username')
+    password: Optional[str] = request.form.get('password')
 
-    if username in USERS and USERS[username]['password'] == password:
-        session['username'] = username
-        session['role'] = USERS[username]['role']
-        return redirect(url_for('dashboard'))
+    if not username or not password:
+        return render_template_string(INDEX_HTML, view='login', error='Missing credentials.')
+    
+    user_data: Optional[Dict[str, Any]] = USER_DB.get(username)
 
-    return render_template_string(INDEX_HTML, view='login', error='Invalid credentials.')
+    if user_data:
+        # 1. Check if the user is blocked
+        if user_data['is_blocked']:
+            return render_template_string(INDEX_HTML, view='login', error='Account is blocked. Contact administrator.')
+        
+        # 2. Check the secure password hash
+        if check_password_hash(user_data['password_hash'], password):
+            session['username'] = username
+            session['role'] = user_data['role']
+            return redirect(url_for('dashboard'))
+
+    # If user doesn't exist or password check fails
+    return render_template_string(INDEX_HTML, view='login', error='Invalid username or password.')
 
 @app.route('/register', methods=['GET', 'POST'])
-def register():
-    """Handles user registration."""
+def register() -> Response:
+    """Handles new user registration, hashing the password, and setting the default USER_ROLE."""
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
+        username: Optional[str] = request.form.get('username')
+        password: Optional[str] = request.form.get('password')
 
-        if username in USERS:
+        if not username or not password:
+            return render_template_string(INDEX_HTML, view='register', error='Missing credentials.')
+
+        if username in USER_DB:
             return render_template_string(INDEX_HTML, view='register', error='Username already exists.')
         
-        # In a real app, hash the password before saving!
-        USERS[username] = {'password': password, 'role': 'user'}
+        # Security: Hash the password before saving
+        hashed_password: str = generate_password_hash(password)
+        
+        # Default registration is always USER_ROLE
+        USER_DB[username] = {'password_hash': hashed_password, 'role': USER_ROLE, 'is_blocked': False}
+        
         session['username'] = username
-        session['role'] = 'user'
-        # Database operation: save new user
-        # e.g., db.users.insert_one({'username': username, 'password': hash(password), 'role': 'user'})
+        session['role'] = USER_ROLE
         return redirect(url_for('dashboard'))
 
     return render_template_string(INDEX_HTML, view='register')
 
 
 @app.route('/dashboard')
-def dashboard():
-    """Renders the user or admin dashboard based on session role."""
+def dashboard() -> Response:
+    """Renders the dashboard, providing admin view privileges if applicable."""
     if 'username' not in session:
         return redirect(url_for('home'))
 
-    username = session['username']
-    role = session['role']
+    username: str = session['username']
+    role: str = session['role']
     
-    # Store data (mock products for the store/search functionality)
+    # Mock data for demonstration
     products = [
         {'id': 1, 'name': 'Quantum Flux Capacitor', 'price': 999.99, 'description': 'Enables temporal displacement.'},
         {'id': 2, 'name': 'Invisibility Cloak', 'price': 150.00, 'description': 'Perfect for silent observation.'},
-        {'id': 3, 'name': 'Self-Stirring Mug', 'price': 29.50, 'description': 'The lazy person\'s dream.'},
-        {'id': 4, 'name': 'Anti-Gravity Boots', 'price': 450.00, 'description': 'A gentle lift from reality.'}
+        {'id': 3, 'name': 'Self-Stirring Mug', 'price': 29.50, 'description': 'The lazy person\'s dream.'}
     ]
+    
+    # If the user is an admin, they get the full list of users for management
+    dashboard_users: Dict[str, Dict[str, Any]] = USER_DB if is_admin(role) else {}
 
     return render_template_string(DASHBOARD_HTML, 
-                                  username=username, 
-                                  role=role, 
-                                  products=products)
-
+                           username=username, 
+                           role=role, 
+                           products=products,
+                           users=dashboard_users)
 
 @app.route('/logout')
-def logout():
+def logout() -> Response:
     """Clears the session and redirects to the home page."""
     session.pop('username', None)
     session.pop('role', None)
     return redirect(url_for('home'))
 
+# --- ADMIN API ENDPOINTS (Secured with @requires_admin decorator) ---
+
+@app.route('/api/block_user', methods=['POST'])
+@requires_admin
+def block_user_api() -> Response:
+    """API endpoint for Admin to block or unblock a user."""
+    try:
+        data: Optional[Dict[str, Any]] = request.get_json()
+        if not data:
+             return jsonify({'error': 'Invalid JSON payload.'}), 400
+             
+        username_to_modify: str = data.get('username')
+        is_blocked: bool = data.get('is_blocked')
+
+        if not isinstance(is_blocked, bool):
+             return jsonify({'error': 'Field is_blocked must be a boolean.'}), 400
+
+    except Exception:
+        return jsonify({'error': 'Failed to parse request data.'}), 400
+        
+    if username_to_modify not in USER_DB:
+        return jsonify({'error': 'User not found.'}), 404
+        
+    if username_to_modify == session.get('username'):
+        return jsonify({'error': 'Cannot block your own account.'}), 400
+        
+    USER_DB[username_to_modify]['is_blocked'] = is_blocked
+    action: str = "blocked" if is_blocked else "unblocked"
+    return jsonify({'message': f'User {username_to_modify} has been successfully {action}.'}), 200
+
+@app.route('/api/add_admin', methods=['POST'])
+@requires_admin
+def add_admin_api() -> Response:
+    """API endpoint for Admin to create a new admin account."""
+    try:
+        data: Optional[Dict[str, Any]] = request.get_json()
+        if not data:
+             return jsonify({'error': 'Invalid JSON payload.'}), 400
+             
+        username: str = data.get('username')
+        password: str = data.get('password')
+    except Exception:
+        return jsonify({'error': 'Failed to parse request data.'}), 400
+
+    if not username or not password:
+        return jsonify({'error': 'Missing username or password.'}), 400
+
+    if username in USER_DB:
+        return jsonify({'error': 'Username already exists.'}), 409
+
+    # Security: Hash the password
+    hashed_password: str = generate_password_hash(password)
+    
+    # Register as admin
+    USER_DB[username] = {'password_hash': hashed_password, 'role': ADMIN_ROLE, 'is_blocked': False}
+    return jsonify({'message': f'Admin user {username} created successfully.'}), 200
 
 if __name__ == '__main__':
+    # Setting debug=True is for development only
     app.run(debug=True)
